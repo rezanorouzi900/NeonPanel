@@ -1,6 +1,9 @@
 # Dockerfile — multi-stage: python deps + xray binary + slim runtime.
 # Author: OpenCode
 
+# global default (must be BEFORE any FROM to propagate into stages)
+ARG XRAY_VERSION=26.3.27
+
 # ---- stage 1: python deps ----
 FROM python:3.11-slim AS pydeps
 WORKDIR /build
@@ -8,17 +11,17 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --prefix=/pkg -r requirements.txt
 
 # ---- stage 2: xray binary ----
-ARG XRAY_VERSION=26.3.27
 FROM alpine:3.20 AS xraydl
-ARG XRAY_VERSION
-RUN apk add --no-cache unzip curl && \
+ARG XRAY_VERSION=26.3.27
+RUN test -n "$XRAY_VERSION" && apk add --no-cache unzip curl && \
+    echo "downloading xray v${XRAY_VERSION}" && \
     curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors \
       -o /tmp/x.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip" && \
     unzip -o /tmp/x.zip -d /xray xray && chmod +x /xray/xray
 
 # ---- stage 3: final ----
 FROM python:3.11-slim
-ARG XRAY_VERSION
+ARG XRAY_VERSION=26.3.27
 ENV PYTHONUNBUFFERED=1 DATA_DIR=/data PORT=8080 XRAY_VERSION=${XRAY_VERSION}
 RUN useradd -u 1000 -m appuser
 WORKDIR /app
