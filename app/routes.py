@@ -138,6 +138,11 @@ def add_user(body: dict, request: Request,
         msg = "ورودی نامعتبر است" if code == "BAD_INPUT" else "این نام قبلاً استفاده شده"
         raise err(400 if code == "BAD_INPUT" else 409, code, msg,
                   ["name"] if code == "BAD_INPUT" else None)
+    # user must exist in xray's config before its links can work
+    from .xray_config import rebuild_and_reload
+
+    if not rebuild_and_reload(session=s, supervisor=supervisor):
+        raise err(500, "XRAY_FAIL", "کاربر ساخته شد اما بازسازی کانفیگ Xray شکست خورد")
     ctx = link_ctx(s, request)
     links = build_all(user, ctx)
     return ok_data({
@@ -167,6 +172,10 @@ def edit_user(user_id: int, body: dict,
     if code:
         raise err(404 if code == "NOT_FOUND" else 400, code,
                   "کاربر پیدا نشد" if code == "NOT_FOUND" else "خطا در ویرایش")
+    # enabled toggle must be reflected in xray's clients
+    from .xray_config import rebuild_and_reload
+
+    rebuild_and_reload(session=s, supervisor=supervisor)
     return ok_data(user.dict())
 
 
@@ -176,6 +185,9 @@ def remove_user(user_id: int, wipe: bool = False,
     code = delete_user(s, user_id, wipe)
     if code:
         raise err(404, "NOT_FOUND", "کاربر پیدا نشد")
+    from .xray_config import rebuild_and_reload
+
+    rebuild_and_reload(session=s, supervisor=supervisor)
     return ok_data({"deleted": True})
 
 

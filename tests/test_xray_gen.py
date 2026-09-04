@@ -1,4 +1,4 @@
-# tests/test_xray_gen.py — v2 config: internal WS port, real x25519 keys, tags.
+﻿# tests/test_xray_gen.py — v2 config: per-proto internal WS ports, real x25519 keys.
 # Author: OpenCode
 import base64
 import json
@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from app.config import Settings
 from app.models import User
 from app.xray_config import (
-    XRAY_WS_PORT,
+    XRAY_WS_PORTS,
     build_config,
     config_path,
     generate_reality_keys,
@@ -35,12 +35,17 @@ def test_config_has_required_tags():
     assert {"vless-ws", "vmess-ws", "trojan-ws", "reality-in", "api-in"} <= tags
 
 
-def test_ws_inbounds_listen_on_internal_port():
+def test_ws_inbounds_distinct_internal_ports():
+    """xray cannot bind two inbounds to one port — each proto needs its own."""
     cfg = build_config([make_user()], Settings(), {"vless": "/a", "vmess": "/b", "trojan": "/c"})
+    ports = {}
     for tag in ("vless-ws", "vmess-ws", "trojan-ws"):
         ib = next(i for i in cfg["inbounds"] if i["tag"] == tag)
-        assert ib["port"] == XRAY_WS_PORT
         assert ib["listen"] == "127.0.0.1"
+        ports[tag] = ib["port"]
+    assert len(set(ports.values())) == 3, "WS inbounds must have distinct ports"
+    for tag, proto in (("vless-ws", "vless"), ("vmess-ws", "vmess"), ("trojan-ws", "trojan")):
+        assert ports[tag] == XRAY_WS_PORTS[proto]
 
 
 def test_reality_keys_are_real_x25519():
@@ -56,7 +61,6 @@ def test_reality_keys_are_real_x25519():
 
 def test_validate_rejects_fake_hex_key():
     cfg = build_config([make_user()], Settings(), {"vless": "/a", "vmess": "/b", "trojan": "/c"})
-    # hex(32) → 64 chars ≠ valid base64 32-byte key
     cfg["inbounds"][-1]["streamSettings"]["realitySettings"]["privateKey"] = "f" * 64
     ok, reason = validate_config(cfg)
     assert ok is False and "x25519" in reason
@@ -68,6 +72,16 @@ def test_ss_port_zero_skips_inbound():
     cfg = build_config([make_user()], s, {"vless": "/a", "vmess": "/b", "trojan": "/c"})
     tags = {i["tag"] for i in cfg["inbounds"]}
     assert "ss-in" not in tags
+
+
+def test_ss_clients_carry_method_per_client():
+    """xray 26.x: method must be inside each client entry."""
+    s = Settings()
+    cfg = build_config([make_user()], s, {"vless": "/a", "vmess": "/b", "trojan": "/c"})
+    ss = next(i for i in cfg["inbounds"] if i["tag"] == "ss-in")
+    for c in ss["settings"]["clients"]:
+        assert c["method"] == "aes-256-gcm"
+        assert c["password"]
 
 
 def test_disabled_users_excluded():

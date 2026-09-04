@@ -55,10 +55,11 @@ async def lifespan(app: FastAPI):
     if generated:
         log.warning(">>> رمز ادمین ساخته‌شده (فقط همین یک‌بار): %s <<<", generated)
         log.warning(">>> بعد از ورود، حتماً رمز را عوض کن <<<")
-    # config write must happen BEFORE supervisor.start() or xray dies instantly
+    # config write must happen BEFORE supervisor.start() or xray dies instantly;
+    # use_db=True so EXISTING users are included in xray's client lists
     from .xray_config import rebuild_and_reload
 
-    rebuild_and_reload()
+    rebuild_and_reload(use_db=True)
     try:
         supervisor.start()
     except Exception as e:  # noqa: BLE001 — panel must boot even without xray

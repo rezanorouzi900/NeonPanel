@@ -17,7 +17,12 @@ from .config import Settings, settings
 log = logging.getLogger("xray")
 
 XRAY_API_PORT = int(os.getenv("XRAY_API_PORT", "10085"))
-XRAY_WS_PORT = int(os.getenv("XRAY_WS_PORT", "10086"))
+# one internal WS port per protocol (xray forbids two inbounds on the same port)
+XRAY_WS_PORTS = {
+    "vless": int(os.getenv("XRAY_WS_PORT_VLESS", "10086")),
+    "vmess": int(os.getenv("XRAY_WS_PORT_VMESS", "10087")),
+    "trojan": int(os.getenv("XRAY_WS_PORT_TROJAN", "10088")),
+}
 REQUIRED_TAGS = {"vless-ws", "vmess-ws", "trojan-ws", "reality-in"}
 
 
@@ -69,9 +74,11 @@ def build_config(
     paths: dict,
     reality_keys: dict | None = None,
     api_port: int = XRAY_API_PORT,
-    ws_port: int = XRAY_WS_PORT,
+    ws_ports: dict | None = None,
 ) -> dict:
-    """Full Xray config. WS inbounds listen on a private port bridged by the panel."""
+    """Full Xray config. Each WS protocol gets its own internal 127.0.0.1 port
+    (xray cannot bind two inbounds to the same port); the panel bridges them."""
+    ws_ports = ws_ports or XRAY_WS_PORTS
     users = [u for u in users if u.enabled]
     rk = reality_keys or generate_reality_keys()
     inbounds: list[dict] = [
@@ -80,25 +87,32 @@ def build_config(
             "protocol": "dokodemo-door", "settings": {"address": "127.0.0.1"},
         },
         {
-            "tag": "vless-ws", "listen": "127.0.0.1", "port": ws_port, "protocol": "vless",
+            "tag": "vless-ws", "listen": "127.0.0.1", "port": ws_ports["vless"], "protocol": "vless",
             "settings": {"clients": _clients_vless(users), "decryption": "none"},
             "streamSettings": {"network": "ws", "wsSettings": {"path": paths["vless"]}},
         },
         {
-            "tag": "vmess-ws", "listen": "127.0.0.1", "port": ws_port, "protocol": "vmess",
+            "tag": "vmess-ws", "listen": "127.0.0.1", "port": ws_ports["vmess"], "protocol": "vmess",
             "settings": {"clients": _clients_vmess(users)},
             "streamSettings": {"network": "ws", "wsSettings": {"path": paths["vmess"]}},
         },
         {
-            "tag": "trojan-ws", "listen": "127.0.0.1", "port": ws_port, "protocol": "trojan",
+            "tag": "trojan-ws", "listen": "127.0.0.1", "port": ws_ports["trojan"], "protocol": "trojan",
             "settings": {"clients": _clients_trojan(users)},
             "streamSettings": {"network": "ws", "wsSettings": {"path": paths["trojan"]}},
         },
     ]
     if s.ss_port and s.ss_port > 0:
+        # xray 26.x format: method+password per client (top-level method ignored)
         inbounds.append({
             "tag": "ss-in", "port": s.ss_port, "protocol": "shadowsocks",
-            "settings": {"method": "aes-256-gcm", "clients": _clients_ss(users), "network": "tcp,udp"},
+            "settings": {
+                "clients": [
+                    {"method": "aes-256-gcm", "password": u2.ss_pass, "email": u2.name}
+                    for u2 in users
+                ],
+                "network": "tcp,udp",
+            },
         })
     inbounds.append({
         "tag": "reality-in", "port": s.reality_port, "protocol": "vless",
@@ -166,26 +180,36 @@ def write_config(cfg: dict, path: str) -> None:
     os.replace(tmp, path)
 
 
-def rebuild_and_reload(session: Session | None = None, supervisor=None) -> bool:
-    """Build → validate → write → graceful reload (only if xray child is active)."""
+def rebuild_and_reload(session: Session | None = None, supervisor=None, use_db: bool = True) -> bool:
+    """Build → validate → write → graceful reload.
+    Always loads users from DB when a session is available (or use_db forces it)."""
     users: list = []
     paths: dict = {}
     rk: dict | None = None
-    if session is not None:
-        from .db import get_setting
+    if session is not None or use_db:
+        from .db import get_engine, get_setting
         from .models import User
 
-        users = session.exec(select(User)).all()
-        raw = get_setting(session, "ws_paths", "")
+        if session is None:
+            session = Session(get_engine(settings.data_dir))
+            close_after = True
+        else:
+            close_after = False
         try:
-            paths = json.loads(raw) if raw else {}
-        except json.JSONDecodeError:
-            paths = {}
-        priv = get_setting(session, "reality_priv", "")
-        if priv:
-            rk = {"privateKey": priv,
-                  "publicKey": get_setting(session, "reality_pub", ""),
-                  "shortId": get_setting(session, "reality_sid", "")}
+            users = session.exec(select(User)).all()
+            raw = get_setting(session, "ws_paths", "")
+            try:
+                paths = json.loads(raw) if raw else {}
+            except json.JSONDecodeError:
+                paths = {}
+            priv = get_setting(session, "reality_priv", "")
+            if priv:
+                rk = {"privateKey": priv,
+                      "publicKey": get_setting(session, "reality_pub", ""),
+                      "shortId": get_setting(session, "reality_sid", "")}
+        finally:
+            if close_after:
+                session.close()
     if not paths:
         paths = {p: random_ws_path(p) for p in ("vless", "vmess", "trojan")}
     if rk is None:
@@ -196,6 +220,10 @@ def rebuild_and_reload(session: Session | None = None, supervisor=None) -> bool:
         log.error("config invalid: %s", reason)
         return False
     write_config(cfg, config_path())
-    if supervisor is not None and "xray" in supervisor.children:
-        return supervisor.reload_xray()
+    # reload only when xray is actually running; config is already on disk
+    # so it will be picked up on next start (dev/test boxes have no xray binary)
+    if supervisor is not None:
+        child = supervisor.children.get("xray")
+        if child is not None and child.alive():
+            return supervisor.reload_xray()
     return True

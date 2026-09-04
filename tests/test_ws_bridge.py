@@ -1,5 +1,7 @@
-# tests/test_ws_bridge.py — bridge path matching + fallback to panel.
+# tests/test_ws_bridge.py — v2: path→port routing, WS proxy, HTTP deny.
 # Author: OpenCode
+import asyncio
+
 import pytest
 
 from app.ws_bridge import WSBridge
@@ -13,19 +15,40 @@ class FakeApp:
         self.called = True
 
 
-def test_bridge_matches_only_known_paths():
+def _ws_scope(path):
+    return {"type": "websocket", "path": path, "headers": [], "query_string": b""}
+
+
+def _http_scope(path):
+    return {"type": "http", "path": path, "method": "GET", "headers": [], "query_string": b""}
+
+
+async def _noop_receive():
+    return {"type": "websocket.disconnect", "code": 1000}
+
+
+async def _noop_send(msg):
+    pass
+
+
+def test_bridge_routes_path_to_proto_port():
+    from app.xray_config import XRAY_WS_PORTS
+
     app = FakeApp()
     br = WSBridge(app)
-    br.paths = {"/vless-x12345678", "/vmess-y87654321"}
-    assert "/vless-x12345678" in br.paths
-    assert "/api/health" not in br.paths
+    br.set_paths({"vless": "/vless-x12345", "vmess": "/vmess-y67890", "trojan": "/trojan-z11111"})
+    assert br.path_ports["/vless-x12345"] == XRAY_WS_PORTS["vless"]
+    assert br.path_ports["/vmess-y67890"] == XRAY_WS_PORTS["vmess"]
+    assert br.path_ports["/trojan-z11111"] == XRAY_WS_PORTS["trojan"]
+    assert "/api/health" not in br.path_ports
 
 
 @pytest.mark.asyncio
-async def test_bridge_falls_through_to_panel():
+async def test_http_on_ws_path_gets_400():
+    """plain HTTP on a WS path → 400 (no fingerprint), never reaches the panel"""
     app = FakeApp()
     br = WSBridge(app)
-    br.paths = {"/vless-x"}
+    br.set_paths({"vless": "/vless-x"})
 
     sent = []
 
@@ -35,30 +58,54 @@ async def test_bridge_falls_through_to_panel():
     async def send(msg):
         sent.append(msg)
 
-    scope = {"type": "http", "path": "/api/health", "method": "GET",
-             "headers": [], "query_string": b""}
-    await br(scope, receive, send)
-    assert app.called is True  # panel handled it
-    assert sent == []  # panel's own send was invoked through FakeApp
-
-
-@pytest.mark.asyncio
-async def test_bridge_denies_when_upstream_dead():
-    app = FakeApp()
-    br = WSBridge(app)
-    br.paths = {"/vless-x"}
-
-    sent = []
-
-    async def receive():
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(msg):
-        sent.append(msg)
-
-    scope = {"type": "http", "path": "/vless-x", "method": "GET",
-             "headers": [], "query_string": b""}
-    # upstream 127.0.0.1:10086 not running in tests → _pump raises → deny 400
-    await br(scope, receive, send)
+    await br(_http_scope("/vless-x"), receive, send)
     assert app.called is False
     assert sent[0]["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_other_paths_fall_through_to_panel():
+    app = FakeApp()
+    br = WSBridge(app)
+    br.set_paths({"vless": "/vless-x"})
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(msg):
+        pass
+
+    await br(_http_scope("/api/health"), receive, send)
+    assert app.called is True
+
+
+@pytest.mark.asyncio
+async def test_ws_scope_on_other_path_falls_through():
+    app = FakeApp()
+    br = WSBridge(app)
+    br.set_paths({"vless": "/vless-x"})
+
+    await br(_ws_scope("/other"), _noop_receive, _noop_send)
+    assert app.called is True
+
+
+@pytest.mark.asyncio
+async def test_ws_on_bridge_path_connects_or_closes_cleanly():
+    """WS on a known path: upstream absent → close frame, panel untouched."""
+    app = FakeApp()
+    br = WSBridge(app)
+    br.set_paths({"vless": "/vless-x"})
+
+    sent = []
+
+    async def receive():
+        await asyncio.sleep(0)
+        return {"type": "websocket.disconnect", "code": 1000}
+
+    async def send(msg):
+        sent.append(msg)
+
+    await br(_ws_scope("/vless-x"), receive, sent.append if False else send)
+    assert app.called is False
+    kinds = [m["type"] for m in sent]
+    assert any(k in ("websocket.accept", "websocket.close") for k in kinds)

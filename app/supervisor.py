@@ -91,7 +91,7 @@ class Supervisor:
     def setup(self) -> None:
         from .xray_config import config_path
 
-        xray_bin = _which("xray") or "xray"
+        xray_bin = os.getenv("XRAY_PATH_OVERRIDE") or _which("xray") or "xray"
         self.children["xray"] = Child("xray", [xray_bin, "run", "-c", config_path()])
         if settings.cf_mode == "token" and settings.cf_token:
             cf = _which("cloudflared")
