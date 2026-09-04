@@ -1,4 +1,4 @@
-.git
+﻿.git
 .venv
 .env
 .data
@@ -6,7 +6,6 @@ data
 __pycache__
 *.pyc
 .pytest_cache
-.coverage
 tests
 docs
 *.md
