@@ -1,0 +1,23 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11"}
+      - run: pip install -r requirements.txt pytest-cov
+      - run: ruff check app tests
+      - run: pytest -q --cov=app --cov-fail-under=70
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t neonpanel:ci .
+      - run: |
+          docker run -d --name p -p 8080:8080 -e ADMIN_USER=ci -e ADMIN_PASS=ci123456 neonpanel:ci
+          sleep 12
+          curl -fsS http://127.0.0.1:8080/api/health
+          docker rm -f p

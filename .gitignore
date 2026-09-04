@@ -1,0 +1,12 @@
+.data/
+data/
+.env
+secret.txt
+*.db
+*.log
+__pycache__/
+.venv/
+.pytest_cache/
+.coverage
+dist/
+*.pyc
