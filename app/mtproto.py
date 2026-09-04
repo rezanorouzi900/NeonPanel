@@ -1,5 +1,5 @@
 # app/mtproto.py
-# Goal: Telegram MTProto proxy — random 32-hex secret, dd/ee links, asyncio 3.11-safe.
+# Goal: Telegram MTProto proxy — random secret, dd/ee links with the REAL public host.
 # Author: OpenCode
 from __future__ import annotations
 
@@ -32,21 +32,17 @@ def ensure_secret(data_dir: str) -> str:
 def build_links(host: str, port: int, secret: str) -> dict:
     """Simple dd link + cloaked ee link (fakes TLS traffic)."""
     simple = f"https://t.me/proxy?server={host}&port={port}&secret=dd{secret}"
-    domain = "www.google.com"
-    cloaked = f"https://t.me/proxy?server={host}&port={port}&secret=ee{secret}{domain}"
+    cloaked = f"https://t.me/proxy?server={host}&port={port}&secret=ee{secret}www.google.com"
     return {"simple": simple, "cloaked": cloaked}
-
-
-# ---- minimal MTProto handshake responder (structural demo) ----
-HANDSHAKE_TAG = b"\x17\xef\xef\x17\x17\xef\xef\x17"
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """Read the 64-byte MTProto handshake and log it; close politely."""
     try:
         data = await asyncio.wait_for(reader.readexactly(64), timeout=15)
-        if len(data) == 64:
-            print(f"[mtproto] handshake from {writer.get_extra_info('peername')}")
+        peer = writer.get_extra_info("peername")
+        if data:
+            print(f"[mtproto] handshake {len(data)} bytes from {peer}")
     except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionResetError):
         pass
     finally:
@@ -65,11 +61,19 @@ async def serve(port: int) -> None:
 
 
 def suggested_host() -> str:
-    return os.getenv("RAILWAY_TCP_PROXY_DOMAIN", "") or "localhost"
+    """Real public host — never localhost when a public domain is known."""
+    from .domain import detect_domain
+
+    d = detect_domain(None)
+    host = d.split(":")[0]
+    if host in ("localhost", "127.0.0.1"):
+        return os.getenv("RAILWAY_TCP_PROXY_DOMAIN", host)
+    return host
 
 
 if __name__ == "__main__":
     secret = ensure_secret(settings.data_dir)
-    links = build_links(suggested_host(), settings.mt_port, secret)
+    host = suggested_host()
+    links = build_links(host, settings.mt_port, secret)
     print("[mtproto] links:", links)
     asyncio.run(serve(settings.mt_port))

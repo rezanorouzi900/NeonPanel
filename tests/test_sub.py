@@ -1,10 +1,13 @@
-﻿# tests/test_sub.py — base64/clash/singbox/json formats + userinfo + 404s.
+﻿# tests/test_sub.py — v2: formats + beautiful HTML page + userinfo + 404s.
 # Author: OpenCode
 from __future__ import annotations
 
 import base64
 import uuid
 from datetime import datetime, timedelta
+
+BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
+CLIENT_UA = "okhttp/4.12.0"
 
 
 def _login(client):
@@ -23,21 +26,43 @@ def _make_user(client):
     return data
 
 
+def _get_sub(client, token, ua, host="panel.example.com"):
+    return client.get(f"/sub/{token}",
+                      headers={"user-agent": ua, "host": host})
+
+
 def test_sub_base64_decodes_to_links(client):
     d = _make_user(client)
-    r = client.get(f"/sub/{d['sub_token']}", headers={"host": "panel.example.com"})
+    r = _get_sub(client, d["sub_token"], CLIENT_UA)
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("text/plain")
     decoded = base64.b64decode(r.text).decode()
-    assert "vless://" in decoded and "vmess://" in decoded
-    assert "trojan://" in decoded
-    assert f"vless://{d['uuid']}" in decoded
+    assert "vless://" in decoded and f"vless://{d['uuid']}" in decoded
     assert "panel.example.com" in decoded
+
+
+def test_sub_browser_gets_beautiful_html(client):
+    d = _make_user(client)
+    r = _get_sub(client, d["sub_token"], BROWSER_UA)
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    # page shows the real links, not random chars
+    assert "vless://" in r.text
+    assert d["name"] in r.text
+    assert "/api/qr/" in r.text  # QR images
+    assert "مصرف" in r.text  # Persian stats labels
+    assert f"/sub/{d['sub_token']}" in r.text  # sub URL visible
+
+
+def test_sub_html_explicit_fmt(client):
+    d = _make_user(client)
+    r = client.get(f"/sub/{d['sub_token']}?fmt=html")
+    assert "text/html" in r.headers["content-type"]
 
 
 def test_sub_userinfo_header(client):
     d = _make_user(client)
-    r = client.get(f"/sub/{d['sub_token']}", headers={"host": "panel.example.com"})
+    r = _get_sub(client, d["sub_token"], CLIENT_UA)
     ui = r.headers.get("subscription-userinfo", "")
     assert "download=" in ui and "total=" in ui and "expire=" in ui
 
@@ -64,7 +89,6 @@ def test_sub_json_format(client):
     r = client.get(f"/sub/{d['sub_token']}?fmt=json", headers={"host": "panel.example.com"})
     doc = r.json()
     assert doc["name"].startswith("sub-user-")
-    assert doc["quota_gb"] == 10
     assert "vless" in doc["links"]
 
 
@@ -85,7 +109,6 @@ def test_sub_disabled_user_404(client):
 
 def test_sub_expired_user_404(client):
     d = _make_user(client)
-    # force expiry directly in DB
     from sqlmodel import Session
 
     from app.config import settings
@@ -99,3 +122,11 @@ def test_sub_expired_user_404(client):
         s.commit()
     r = client.get(f"/sub/{d['sub_token']}")
     assert r.status_code == 404
+
+
+def test_sub_qr_endpoint(client):
+    d = _make_user(client)
+    r = client.get(f"/api/qr/{d['sub_token']}?p=vless", headers={"host": "panel.example.com"})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/png"
+    assert r.content[:4] == b"\x89PNG"

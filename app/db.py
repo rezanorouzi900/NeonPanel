@@ -1,5 +1,5 @@
 # app/db.py
-# Goal: engine + session + init + admin seeding (PART 2 §6, APPENDIX A.3).
+# Goal: engine + session + init + admin seeding + settings helpers.
 # Author: OpenCode
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import string
 from passlib.context import CryptContext
 from sqlmodel import Session, SQLModel, create_engine, select
 
-from .models import Admin, User
+from .models import Admin, Setting, User
 
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto", bcrypt__rounds=12)
 
@@ -50,6 +50,22 @@ def seed_admin(session: Session, username: str, password: str) -> str | None:
     session.add(Admin(username=username, pass_hash=pwd.hash(password)))
     session.commit()
     return generated
+
+
+def get_setting(session: Session, key: str, default: str = "") -> str:
+    row = session.get(Setting, key)
+    return row.value if row and row.value else default
+
+
+def set_setting(session: Session, key: str, value: str) -> None:
+    row = session.get(Setting, key)
+    if row:
+        row.value = value
+        row.updated_at = __import__("datetime").datetime.utcnow()
+        session.add(row)
+    else:
+        session.add(Setting(key=key, value=value))
+    session.commit()
 
 
 def get_user_by_name(session: Session, name: str) -> User | None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -40,6 +41,7 @@ class Child:
                 stderr=subprocess.DEVNULL,
             )
             self.started_at = time.time()
+            log.info("%s started pid=%s cmd_head=%s", self.name, self.proc.pid, self.cmd[:2])
             return True
         except OSError as e:
             log.warning("start %s failed: %s", self.name, e)
@@ -73,6 +75,10 @@ class Child:
         return ok
 
 
+def _which(name: str) -> str | None:
+    return shutil.which(name)
+
+
 class Supervisor:
     """Start/keep xray + optional cloudflared/mtproto; poll every 5s."""
 
@@ -83,19 +89,27 @@ class Supervisor:
         self._boot = time.time()
 
     def setup(self) -> None:
-        cfg_path = os.path.join(settings.data_dir, "xray-config.json")
-        self.children["xray"] = Child("xray", ["xray", "run", "-c", cfg_path])
+        from .xray_config import config_path
+
+        xray_bin = _which("xray") or "xray"
+        self.children["xray"] = Child("xray", [xray_bin, "run", "-c", config_path()])
         if settings.cf_mode == "token" and settings.cf_token:
-            self.children["tunnel"] = Child(
-                "tunnel",
-                ["cloudflared", "tunnel", "--no-autoupdate", "run", "--token", settings.cf_token],
-            )
+            cf = _which("cloudflared")
+            if cf:
+                self.children["tunnel"] = Child(
+                    "tunnel",
+                    [cf, "tunnel", "--no-autoupdate", "run", "--token", settings.cf_token],
+                )
         elif settings.cf_mode == "quick":
-            self.children["tunnel"] = Child(
-                "tunnel", ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{settings.port}"]
-            )
+            cf = _which("cloudflared")
+            if cf:
+                self.children["tunnel"] = Child(
+                    "tunnel", [cf, "tunnel", "--url", f"http://127.0.0.1:{settings.port}"]
+                )
         if settings.mt_enabled:
-            self.children["mtproto"] = Child("mtproto", [sys.executable, "-m", "app.mtproto"])
+            self.children["mtproto"] = Child(
+                "mtproto", [sys.executable, "-m", "app.mtproto"]
+            )
 
     def start(self) -> None:
         self.setup()
@@ -113,6 +127,8 @@ class Supervisor:
                     wait = BACKOFF[min(child.fails, len(BACKOFF) - 1)]
                     log.info("%s down — restarting in %ss", child.name, wait)
                     time.sleep(wait)
+                    if not self._running:
+                        return
                     if child.restart():
                         child.fails = 0
                     else:
@@ -121,14 +137,14 @@ class Supervisor:
 
     def status(self) -> dict:
         return {
-            "xray": self.children.get("xray").status() if "xray" in self.children else "off",
-            "tunnel": self.children.get("tunnel").status() if "tunnel" in self.children else "off",
-            "mtproto": self.children.get("mtproto").status() if "mtproto" in self.children else "off",
+            "xray": self.children["xray"].status() if "xray" in self.children else "off",
+            "tunnel": self.children["tunnel"].status() if "tunnel" in self.children else "off",
+            "mtproto": self.children["mtproto"].status() if "mtproto" in self.children else "off",
             "uptime": int(time.time() - self._boot),
         }
 
     def reload_xray(self) -> bool:
-        """Graceful xray restart (SIGHUP unsupported → restart with 5s drain)."""
+        """Graceful xray restart (config is rewritten by caller before this)."""
         child = self.children.get("xray")
         if child is None:
             return False

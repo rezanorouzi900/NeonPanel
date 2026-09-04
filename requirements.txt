@@ -19,3 +19,4 @@ python-multipart>=0.0.9
 pillow>=10.0
 bcrypt==4.2.1
 pytest-cov>=5.0
+cryptography>=42.0

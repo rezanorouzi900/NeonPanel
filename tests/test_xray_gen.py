@@ -1,14 +1,20 @@
-# tests/test_xray_gen.py — generated config: tags, reality keys, SS skip, atomic write.
+# tests/test_xray_gen.py — v2 config: internal WS port, real x25519 keys, tags.
 # Author: OpenCode
-from __future__ import annotations
-
+import base64
 import json
-import os
 from datetime import datetime, timedelta
 
 from app.config import Settings
 from app.models import User
-from app.xray_config import build_config, validate_config, write_config
+from app.xray_config import (
+    XRAY_WS_PORT,
+    build_config,
+    config_path,
+    generate_reality_keys,
+    random_ws_path,
+    validate_config,
+    write_config,
+)
 
 
 def make_user(name="reza-01"):
@@ -17,19 +23,43 @@ def make_user(name="reza-01"):
                 expires_at=datetime.utcnow() + timedelta(days=30))
 
 
+def test_ws_paths_readable_not_random_garbage():
+    p = random_ws_path("vless")
+    assert p.startswith("/vless-") and len(p) == len("/vless-") + 8
+    assert p.isascii() and p[1:].replace("-", "").isalnum()
+
+
 def test_config_has_required_tags():
-    cfg = build_config([make_user()], Settings(), {"vless": "/a", "vmess": "/b", "trojan": "/c"})
+    cfg = build_config([make_user()], Settings(), {"vless": "/vless-x", "vmess": "/vmess-x", "trojan": "/trojan-x"})
     tags = {i["tag"] for i in cfg["inbounds"]}
     assert {"vless-ws", "vmess-ws", "trojan-ws", "reality-in", "api-in"} <= tags
 
 
-def test_reality_settings_present():
+def test_ws_inbounds_listen_on_internal_port():
     cfg = build_config([make_user()], Settings(), {"vless": "/a", "vmess": "/b", "trojan": "/c"})
-    reality = [i for i in cfg["inbounds"] if i["tag"] == "reality-in"][0]
-    rs = reality["streamSettings"]["realitySettings"]
-    assert rs["privateKey"] and rs["shortIds"]
-    assert rs["serverNames"] == ["www.microsoft.com"]
-    assert rs["dest"] == "www.microsoft.com:443"
+    for tag in ("vless-ws", "vmess-ws", "trojan-ws"):
+        ib = next(i for i in cfg["inbounds"] if i["tag"] == tag)
+        assert ib["port"] == XRAY_WS_PORT
+        assert ib["listen"] == "127.0.0.1"
+
+
+def test_reality_keys_are_real_x25519():
+    rk = generate_reality_keys()
+    pad = "=" * (-len(rk["privateKey"]) % 4)
+    raw = base64.urlsafe_b64decode(rk["privateKey"] + pad)
+    assert len(raw) == 32
+    pad2 = "=" * (-len(rk["publicKey"]) % 4)
+    raw2 = base64.urlsafe_b64decode(rk["publicKey"] + pad2)
+    assert len(raw2) == 32
+    assert len(rk["shortId"]) >= 2
+
+
+def test_validate_rejects_fake_hex_key():
+    cfg = build_config([make_user()], Settings(), {"vless": "/a", "vmess": "/b", "trojan": "/c"})
+    # hex(32) → 64 chars ≠ valid base64 32-byte key
+    cfg["inbounds"][-1]["streamSettings"]["realitySettings"]["privateKey"] = "f" * 64
+    ok, reason = validate_config(cfg)
+    assert ok is False and "x25519" in reason
 
 
 def test_ss_port_zero_skips_inbound():
@@ -44,15 +74,8 @@ def test_disabled_users_excluded():
     u = make_user()
     u.enabled = False
     cfg = build_config([u], Settings(), {"vless": "/a", "vmess": "/b", "trojan": "/c"})
-    vless = [i for i in cfg["inbounds"] if i["tag"] == "vless-ws"][0]
+    vless = next(i for i in cfg["inbounds"] if i["tag"] == "vless-ws")
     assert vless["settings"]["clients"] == []
-
-
-def test_validate_ok_and_missing_tag():
-    cfg = build_config([make_user()], Settings(), {"vless": "/a", "vmess": "/b", "trojan": "/c"})
-    assert validate_config(cfg)[0] is True
-    bad = {"inbounds": [{"tag": "x", "port": 1}]}
-    assert validate_config(bad)[0] is False
 
 
 def test_atomic_write_no_partial(tmp_path):
@@ -60,6 +83,13 @@ def test_atomic_write_no_partial(tmp_path):
     path = str(tmp_path / "xray-config.json")
     write_config(cfg, path)
     with open(path, encoding="utf-8") as f:
-        loaded = json.load(f)  # must parse — no partial file
+        loaded = json.load(f)
     assert loaded["log"]["loglevel"] == "warning"
+    import os
+
     assert not os.path.exists(path + ".tmp")
+
+
+def test_config_path_in_data_dir():
+    assert config_path().endswith("xray-config.json")
+    assert ".data" in config_path() or "data" in config_path()

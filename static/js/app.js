@@ -151,22 +151,21 @@ async function pageDashboard() {
   const [health, stats, domain] = await Promise.all([
     api("/api/health"), api("/api/stats/summary"), api("/api/domain"),
   ]);
-  const isLocal = domain.domain.startsWith("localhost");
+  const isLocal = domain.domain.startsWith("localhost") || domain.domain.startsWith("127.");
   $("#app").innerHTML = shell(`
     <h1>${t("nav.dashboard")}</h1>
     ${isLocal ? `<div class="banner-warn">${t("dash.localhost_warn")}</div>` : ""}
     <div class="grid">
-      <div class="card stat"><div class="num">${health.active_users ?? stats.active_users}/${stats.total_users}</div><div class="lbl">${t("dash.users_active")}</div></div>
+      <div class="card stat"><div class="num">${stats.active_users}/${stats.total_users}</div><div class="lbl">${t("dash.users_active")}</div></div>
       <div class="card stat"><div class="num">${fmtGB(stats.today_bytes)}</div><div class="lbl">${t("dash.use_today")}</div></div>
       <div class="card stat"><div class="num" style="font-size:16px;word-break:break-all">${esc(domain.domain)}</div><div class="lbl">${t("dash.domain_now")}</div></div>
     </div>
     <div class="card"><h2>${t("dash.services")}</h2>
-      <div style="display:flex;gap:24px;flex-wrap:wrap;font-size:14px">
-        <span><i class="light ${health.xray}"></i>Xray</span>
-        <span><i class="light ${health.tunnel}"></i>Tunnel</span>
-        <span><i class="light ${health.mtproto}"></i>MTProto</span>
+      <div id="svc" style="display:flex;gap:24px;flex-wrap:wrap;font-size:14px">
+        ${svcRow("Xray", health.xray)} ${svcRow("Tunnel", health.tunnel)} ${svcRow("MTProto", health.mtproto)}
         <span style="color:var(--txt-1)">uptime: ${Math.floor(health.uptime / 60)}m</span>
       </div>
+      ${health.xray !== "up" ? `<p style="margin-top:10px;font-size:12.5px;color:var(--warn)">Xray ${health.xray === "down" ? "پایین است — «ری‌استارت Xray» را بزن" : "غیرفعال"}</p>` : ""}
     </div>
     <div class="card"><h2>${t("chart.month")}</h2><canvas id="chart" height="90"></canvas><div id="chart-fallback"></div></div>
     <div style="display:flex;gap:10px;flex-wrap:wrap">
@@ -175,10 +174,25 @@ async function pageDashboard() {
     </div>
   `);
   $("#rx").onclick = async () => {
-    try { await api("/api/xray/reload", { method: "POST" }); toast(t("users.copied").replace("کپی شد ✅", "OK ✅")); }
+    try { await api("/api/xray/reload", { method: "POST" }); toast("Xray ✅"); setTimeout(() => render(true), 800); }
     catch (e) { toast(e.message, "bad"); }
   };
+  // live service lights — refresh every 15s without re-rendering the page
+  setInterval(async () => {
+    const el = document.getElementById("svc");
+    if (!el) return; // user navigated away
+    try {
+      const h = await api("/api/health");
+      el.innerHTML = `${svcRow("Xray", h.xray)} ${svcRow("Tunnel", h.tunnel)} ${svcRow("MTProto", h.mtproto)}
+        <span style="color:var(--txt-1)">uptime: ${Math.floor(h.uptime / 60)}m</span>`;
+    } catch { /* silent */ }
+  }, 15000);
   loadChart();
+}
+
+function svcRow(name, st) {
+  const cls = st === "up" ? "up" : st === "down" ? "down" : "off";
+  return `<span><i class="light ${cls}"></i>${name}</span>`;
 }
 
 async function loadChart() {
@@ -317,6 +331,7 @@ async function pageUserDetail(id) {
     </div>
     <div class="card"><h2>${t("users.sub")}</h2>
       <div class="linkbox"><code>${esc(u.sub_url)}</code><button class="btn small" id="cs">${t("sub.copy")}</button></div>
+      <button class="btn ghost" style="margin-top:10px" id="sv">👁 ${t("sub.view_page")}</button>
     </div>
     <div class="card"><h2>${t("users.traffic")}</h2><div id="tr">…</div></div>
   `);
@@ -341,6 +356,7 @@ async function pageUserDetail(id) {
     location.href = map[b.dataset.d] + "import/" + encodeURIComponent(u.sub_url);
   };
   $("#cs").onclick = () => copy(u.sub_url);
+  $("#sv").onclick = () => window.open(u.sub_url, "_blank");
 }
 
 async function pageMtproto() {
@@ -352,7 +368,7 @@ async function pageMtproto() {
         <h2 style="margin:0"><i class="light ${st.enabled ? "up" : "off"}"></i>${st.enabled ? t("mt.on") : t("mt.off")}</h2>
         <button class="btn ${st.enabled ? "bad" : ""}" id="tg">${t("mt.toggle")}</button>
       </div>
-      <p style="color:var(--txt-1);margin-top:8px;font-size:13px">${t("mt.port")}: <b>${st.port}</b> — ${t("mt.host")}: <b>${esc((st.links.simple || "").split("server=")[1]?.split("&")[0] || "—")}</b></p>
+      <p style="color:var(--txt-1);margin-top:8px;font-size:13px">${t("mt.port")}: <b>${st.port}</b> — ${t("mt.host")}: <b style="color:var(--neon-1)">${esc(st.host || "—")}</b></p>
     </div>
     ${st.enabled ? `
     <div class="card"><h2>${t("mt.links")}</h2>

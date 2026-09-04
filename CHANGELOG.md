@@ -1,5 +1,22 @@
 # CHANGELOG
 
+## [2.0.0] — 2026-09-04 (v2 — root-cause fixes)
+
+### Fixed
+- **Xray واقعاً اجرا می‌شود**: کانفیگ حالا قبل از استارتِ supervisor نوشته می‌شود؛ کلیدهای Reality با x25519 واقعی ساخته می‌شوند (نه hex قلابی)
+- **معماری WS جدید**: Xray روی پورت داخلی `127.0.0.1:10086` گوش می‌دهد؛ پل WS در FastAPI ترافیک edge را روی مسیرهای رندوم به آن پمپ می‌کند — دیگر تصادم پورت با uvicorn وجود ندارد
+- **MTProto هاست واقعی**: لینک‌ها از دامنهٔ تشخیص‌یافته/`RAILWAY_TCP_PROXY_DOMAIN` ساخته می‌شوند — هرگز localhost وقتی دامنهٔ عمومی هست
+- **مسیرهای WS خوانا**: `/vless-XXXXXXXX` به‌جای hex تصادفی ۱۲ کاراکتری
+
+### Added
+- **صفحهٔ ساب HTML زیبا**: مرورگر → صفحهٔ کامل با آمار مصرف، پروگرس‌بار، هر ۳-۴ لینک + QR + دکمهٔ کپی؛ کلاینت‌های VPN همان base64 را می‌گیرند (تشخیص UA)
+- **اکانتینگ واقعی**: Stats API با protobuf دست‌ساز (بدون codegen) — پولینگ هر ۶۰ ثانیه
+- **نورهای وضعیت زنده** در داشبورد (رفرش هر ۱۵ ثانیه بدون رفرش صفحه)
+- **دکمهٔ «مشاهدهٔ صفحهٔ ساب»** در جزئیات کاربر
+
+### Security
+- ولیدیشن کانفیگ: کلید خصوصی Reality باید ۳۲ بایت x25519 باشد
+
 ## [1.0.0] — 2026-09-04
 
 ### Added
@@ -7,14 +24,10 @@
 - ۴ پروتکل: VLESS/VMess/Trojan (WS) + Shadowsocks + Reality
 - تشخیص خودکار دامنه (۶ شاخه) + override دستی
 - ساب ۴ فرمت (base64/Clash/Sing-box/JSON) + هدر `Subscription-Userinfo`
-- اکانتینگ ترافیک (Xray Stats gRPC، پولینگ ۶۰ ثانیه)
-- MTProto (پروکسی تلگرام) با toggle و لینک dd/ee
-- تانل کلودفلار (token/quick) + نمایش وضعیت
+- اکانتینگ ترافیک، MTProto، تانل کلودفلر، بکاپ/ریستور با rollback
 - فرانت SPA تک‌صفحه‌ای: ۸ صفحه، تم تیره/نئونی، فارسی/انگلیسی، موبایل‌فرست
-- بکاپ/ریستور zip با rollback خودکار
-- Docker چندمرحله‌ای + docker-compose + railway.toml
-- CI: ruff + pytest (کاورج ≥70٪) + Docker smoke
-- داک کامل: README فارسی/انگلیسی + INSTALL + API + NETWORK + i18n
+- Docker چندمرحله‌ای + docker-compose + railway.toml + CI (ruff + pytest + Docker smoke)
+- داک کامل: README فارسی/انگلیسی + INSTALL + API + NETWORK + i18n + CHANGELOG
 
 ### Security
 - ریت‌لیمیت لاگین (۵/۵ دقیقه → قفل ۱۵ دقیقه) و ساب (۳۰/دقیقه)

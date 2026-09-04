@@ -1,5 +1,5 @@
 # app/routes.py
-# Goal: all /api routes — auth, users, sub, domain, tunnel, mtproto, system (PART 2 §7).
+# Goal: all /api routes + beautiful HTML subscription page (PART 2 §7, v2).
 # Author: OpenCode
 from __future__ import annotations
 
@@ -7,19 +7,18 @@ import base64
 import io
 import json
 import os
-import secrets
-import string
 from datetime import datetime, timedelta, timezone
 
 import qrcode
 from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from sqlmodel import Session, select
 
+from . import __version__
 from .auth import client_ip, create_access, create_refresh, decode, get_current_admin, guard, verify_password
 from .backup import make_backup, restore_backup
 from .config import settings
-from .db import get_engine, pwd, seed_admin
+from .db import get_engine, get_setting, pwd, seed_admin, set_setting
 from .domain import detect_domain, domain_source, is_local
 from .links import build_all, user_usable
 from .models import Admin, Setting, TrafficLog, User
@@ -47,25 +46,21 @@ def ok_data(data: dict) -> dict:
 
 
 def get_paths(s: Session) -> dict:
-    row = s.exec(select(Setting).where(Setting.key == "ws_paths")).first()
-    if row and row.value:
-        try:
-            return json.loads(row.value)
-        except json.JSONDecodeError:
-            pass
-    return {"vless": "/vless", "vmess": "/vmess", "trojan": "/trojan"}
+    raw = get_setting(s, "ws_paths", "")
+    try:
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
 
 
-def link_ctx(s: Session, request: Request) -> dict:
+def link_ctx(s: Session, request: Request | None) -> dict:
     domain = detect_domain(request)
-    # host part without port (for sni/host fields)
     host = domain.split(":")[0]
     tls = not is_local(domain)
     if ":" not in domain:
-        # no explicit port in Host — either 443 edge (https) or plain dev
         port = 443 if tls else settings.port
     else:
-        _host_only, _, port_str = domain.partition(":")
+        _h, _, port_str = domain.partition(":")
         port = int(port_str) if port_str.isdigit() else settings.port
     return {"domain": host, "port": port, "tls": tls,
             "paths": get_paths(s), "ss_port": settings.ss_port}
@@ -194,7 +189,7 @@ def reset_user(user_id: int, new_token: bool = False,
 
 
 @router.get("/api/users/{user_id}/qr")
-def user_qr(user_id: int, proto: str = "vless", request: Request = None,
+def user_qr(user_id: int, request: Request, proto: str = "vless",
             admin: str = Depends(get_current_admin), s: Session = Depends(db_session)):
     user = s.get(User, user_id)
     if not user:
@@ -210,8 +205,94 @@ def user_qr(user_id: int, proto: str = "vless", request: Request = None,
 
 # ---------------- subscription (public, token-only) ----------------
 
+def _sub_page(user: User, links: dict, sub_url: str) -> str:
+    """Beautiful public HTML page for the subscription (browser view)."""
+    cards = ""
+    for p in links:
+        label = p.upper()
+        cards += f"""
+        <div class="pcard">
+          <div class="prow"><span class="pname">{label}</span><span class="badge">ACTIVE</span></div>
+          <div class="lbox"><code id="l-{p}">{links[p]}</code>
+            <button class="btn sm" data-copy="{p}">کپی لینک</button></div>
+          <div class="qrwrap"><img src="/api/qr/{user.sub_token}?p={p}" alt="QR {label}"></div>
+        </div>"""
+    pct = min(100, int(user.used_bytes / (user.quota_gb * 1024**3) * 100)) if user.quota_gb else 0
+    exp = user.expires_at.strftime("%Y-%m-%d") if user.expires_at else "نامحدود"
+    gb_used = f"{user.used_bytes / 1024**3:.2f}"
+    gb_total = f"{user.quota_gb:.0f}" if user.quota_gb else "∞"
+    return f"""<!doctype html><html lang="fa" dir="rtl"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{user.name} — NeonPanel</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:system-ui,'Segoe UI',Tahoma,sans-serif;background:#070b14;color:#f1f5f9;min-height:100vh;padding:24px}}
+.wrap{{max-width:820px;margin:0 auto}}
+h1{{font-size:24px;margin-bottom:6px;background:linear-gradient(90deg,#22d3ee,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}}
+.sub{{color:#94a3b8;font-size:13px;margin-bottom:20px}}
+.card{{background:#0c1322;border:1px solid #1e293b;border-radius:16px;padding:18px;margin-bottom:14px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px}}
+.stat .n{{font-size:20px;font-weight:800;color:#22d3ee}}.stat .l{{font-size:12px;color:#94a3b8;margin-top:2px}}
+.bar{{height:8px;background:#111a2e;border-radius:99px;overflow:hidden;margin-top:8px}}
+.bar>i{{display:block;height:100%;background:linear-gradient(90deg,#22d3ee,#a78bfa);border-radius:99px}}
+.pcard{{margin-bottom:18px}}
+.prow{{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}}
+.pname{{font-weight:700;font-size:15px}}
+.badge{{font-size:11px;padding:3px 10px;border-radius:99px;background:rgba(52,211,153,.15);color:#34d399;font-weight:700}}
+.lbox{{display:flex;gap:8px;align-items:center;background:#111a2e;border:1px solid #26344d;border-radius:12px;padding:10px;direction:ltr}}
+.lbox code{{flex:1;font-size:11px;color:#22d3ee;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.btn{{background:linear-gradient(90deg,#22d3ee,#a78bfa);border:0;color:#06121f;font-weight:700;padding:7px 14px;border-radius:10px;cursor:pointer;font-size:12px}}
+.qrwrap{{text-align:center;margin-top:12px}}
+.qrwrap img{{width:190px;height:190px;background:#fff;padding:6px;border-radius:12px}}
+.suburl{{display:flex;gap:8px;align-items:center;background:#111a2e;border:1px dashed #26344d;border-radius:12px;padding:12px;direction:ltr;margin-top:10px}}
+.suburl code{{flex:1;font-size:12px;color:#a78bfa;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+.fmt{{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}}
+.fmt a{{color:#22d3ee;font-size:12px;background:#111a2e;border:1px solid #26344d;padding:6px 12px;border-radius:10px;text-decoration:none}}
+.toast{{position:fixed;bottom:20px;inset-inline-start:20px;background:#111a2e;border:1px solid #34d399;color:#34d399;padding:10px 16px;border-radius:10px;font-size:13px;display:none;z-index:9}}
+</style></head><body><div class="wrap">
+<h1>⚡ {user.name}</h1><div class="sub">سابسکریپشن NeonPanel — لینک‌های زیر آمادهٔ استفاده هستند</div>
+<div class="card"><div class="grid">
+<div class="stat"><div class="n">{gb_used} GB</div><div class="l">مصرف شده</div></div>
+<div class="stat"><div class="n">{gb_total} GB</div><div class="l">سقف حجم</div></div>
+<div class="stat"><div class="n">{pct}%</div><div class="l">پیشرفت مصرف<div class="bar"><i style="width:{pct}%"></i></div></div></div>
+<div class="stat"><div class="n" style="font-size:16px">{exp}</div><div class="l">تاریخ انقضا</div></div>
+</div></div>
+<div class="card"><b style="font-size:14px">🔗 لینک ساب (این را در اپ وارد کن):</b>
+<div class="suburl"><code>{sub_url}</code><button class="btn" id="cp">کپی ساب</button></div>
+<div class="fmt"><a href="?fmt=clash">Clash</a><a href="?fmt=singbox">Sing-box</a><a href="?fmt=json">JSON</a><a href="?fmt=base64">Base64</a></div>
+</div>
+<div class="card">{cards}</div>
+</div><div class="toast" id="t">کپی شد ✅</div>
+<script>
+function toast(){{const t=document.getElementById('t');t.style.display='block';setTimeout(()=>t.style.display='none',1500)}}
+document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{{
+  const link=document.getElementById('l-'+b.dataset.copy).textContent;
+  navigator.clipboard.writeText(link).then(toast);
+}});
+document.getElementById('cp').onclick=()=>{{
+  navigator.clipboard.writeText('{sub_url}').then(toast);
+}};
+</script></body></html>"""
+
+
+@router.get("/api/qr/{token}")
+def sub_qr(token: str, request: Request, p: str = "vless",
+           s: Session = Depends(db_session)):
+    """Public QR for a sub token (used inside the HTML sub page)."""
+    user = s.exec(select(User).where(User.sub_token == token)).first()
+    if not user or not user_usable(user)[0]:
+        raise err(404, "SUB_GONE", "لینک ساب معتبر نیست")
+    links = build_all(user, link_ctx(s, request))
+    if p not in links:
+        p = "vless"
+    img = qrcode.make(links[p])
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")
+
+
 @router.get("/sub/{token}")
-def subscription(token: str, fmt: str = "base64", request: Request = None,
+def subscription(token: str, request: Request, fmt: str = "base64",
                  s: Session = Depends(db_session)):
     user = s.exec(select(User).where(User.sub_token == token)).first()
     if not user:
@@ -221,12 +302,24 @@ def subscription(token: str, fmt: str = "base64", request: Request = None,
         return PlainTextResponse("این ساب دیگر فعال نیست", status_code=404)
     ctx = link_ctx(s, request)
     links = build_all(user, ctx)
+    ua = (request.headers.get("user-agent") or "").lower()
+    # browser → beautiful HTML page; VPN clients get base64
+    wants_html = fmt == "html" or (
+        fmt == "base64"
+        and any(x in ua for x in ("mozilla", "chrome", "safari", "edge", "opera"))
+        and not any(x in ua for x in ("okhttp", "v2ray", "sing-box", "hiddify", "clash"))
+    )
+    if wants_html:
+        proto = "https" if ctx["tls"] else "http"
+        sub_url = f"{proto}://{ctx['domain']}/sub/{token}"
+        return HTMLResponse(_sub_page(user, links, sub_url))
     entries = []
-    for proto, link in links.items():
+    for proto_name, link in links.items():
         entries.append({
-            "proto": proto, "label": f"{user.name}-{proto.upper()}", "domain": ctx["domain"],
-            "port": ctx["port"], "path": ctx["paths"].get(proto, "/"), "uuid": user.uuid,
-            "password": user.trojan_pass if proto == "trojan" else user.ss_pass,
+            "proto": proto_name, "label": f"{user.name}-{proto_name.upper()}",
+            "domain": ctx["domain"], "port": ctx["port"],
+            "path": ctx["paths"].get(proto_name, "/"), "uuid": user.uuid,
+            "password": user.trojan_pass if proto_name == "trojan" else user.ss_pass,
         })
     if fmt == "clash":
         return PlainTextResponse(render_clash(entries), media_type="text/yaml; charset=utf-8")
@@ -246,16 +339,15 @@ def subscription(token: str, fmt: str = "base64", request: Request = None,
 
 @router.get("/api/health")
 def health(request: Request):
-    from . import __version__
-
     st = supervisor.status()
     return {"ok": True, "version": __version__, "xray": st["xray"],
             "tunnel": st["tunnel"], "mtproto": st["mtproto"],
-            "domain": detect_domain(request)}
+            "uptime": st["uptime"], "domain": detect_domain(request)}
 
 
 @router.get("/api/stats/summary")
-def stats_summary(days: int = 30, admin: str = Depends(get_current_admin), s: Session = Depends(db_session)):
+def stats_summary(days: int = 30, admin: str = Depends(get_current_admin),
+                  s: Session = Depends(db_session)):
     users = s.exec(select(User)).all()
     active = [u for u in users if user_usable(u)[0]]
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -306,9 +398,10 @@ def mtproto_status(admin: str = Depends(get_current_admin)):
     from . import mtproto
 
     secret = mtproto.ensure_secret(settings.data_dir)
+    host = mtproto.suggested_host()
     return ok_data({
-        "enabled": settings.mt_enabled, "port": settings.mt_port,
-        "links": mtproto.build_links(mtproto.suggested_host(), settings.mt_port, secret),
+        "enabled": settings.mt_enabled, "port": settings.mt_port, "host": host,
+        "links": mtproto.build_links(host, settings.mt_port, secret),
     })
 
 
@@ -360,21 +453,20 @@ def restore(file: UploadFile = File(...), admin: str = Depends(get_current_admin
 # ---------------- startup helpers ----------------
 
 def random_ws_paths() -> dict:
-    alpha = string.ascii_letters + string.digits
-    return {p: "/" + "".join(secrets.choice(alpha) for _ in range(12))
-            for p in ("vless", "vmess", "trojan")}
+    from .xray_config import random_ws_path
+
+    return {p: random_ws_path(p) for p in ("vless", "vmess", "trojan")}
 
 
 def init_ws_paths(s: Session) -> dict:
-    row = s.exec(select(Setting).where(Setting.key == "ws_paths")).first()
-    if row and row.value:
-        try:
-            return json.loads(row.value)
-        except json.JSONDecodeError:
-            pass
+    raw = get_setting(s, "ws_paths", "")
+    try:
+        if raw:
+            return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
     paths = random_ws_paths()
-    s.add(Setting(key="ws_paths", value=json.dumps(paths)))
-    s.commit()
+    set_setting(s, "ws_paths", json.dumps(paths))
     return paths
 
 
