@@ -11,7 +11,7 @@ import struct
 import time
 
 import httpx
-from starlette.types import Receive, Scope, Send
+from starlette.types import Scope
 
 from . import store
 from .vless import RESP_OK, parse_header
