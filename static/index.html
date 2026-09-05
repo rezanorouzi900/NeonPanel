@@ -3,10 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#f5f6f8">
+<meta name="theme-color" id="theme-color" content="#f5f6f8">
 <title>NeonPanel</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path d='M37 8 17 36h9l-4 20 21-28H34z' fill='%232563eb'/></svg>">
 <link rel="stylesheet" href="css/app.css">
+<script>
+// apply saved theme before first paint (no flash)
+(function(){
+  var t=localStorage.getItem('np_theme');
+  if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}
+  document.documentElement.setAttribute('data-theme',t);
+})();
+</script>
 </head>
 <body>
 <div id="app"><div class="boot"><div class="sk sk-t"></div><div class="sk"></div><div class="sk"></div></div></div>

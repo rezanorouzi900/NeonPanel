@@ -1,4 +1,4 @@
-﻿# app/relay.py
+# app/relay.py
 # The heart: ASGI app that speaks VLESS over WebSocket (native in-process relay).
 # Client -> uvicorn(TLS edge) -> this WS handler -> parse VLESS -> TCP connect -> pipe.
 # Author: OpenCode
@@ -73,15 +73,20 @@ async def handle_vless_ws(scope: Scope, receive, send) -> None:
     sub = _subprotocol(scope)
     await send({"type": "websocket.accept", "subprotocol": sub or None})
 
-    # ed=2560: client embedded the VLESS header (base64) in the subprotocol.
-    # It then sends NO frame until it sees the 101 â€” so decode BEFORE reading.
+# ed=2560: client embedded the VLESS header (base64) in the subprotocol.
+    # It then sends NO frame until it sees the 101 — so decode BEFORE reading.
     initial = b""
     has_ed = bool(sub) and _uses_early_data(scope)
     if has_ed:
+        # clients use base64url without padding (xray `ed=2560` style); accept
+        # plain base64 too — try urlsafe first, fall back to standard.
         try:
-            ed = base64.b64decode(sub)
+            ed = base64.urlsafe_b64decode(sub + "=" * (-len(sub) % 4))
         except Exception:
-            ed = b""
+            try:
+                ed = base64.b64decode(sub)
+            except Exception:
+                ed = b""
         if len(ed) >= 24:
             initial = ed
     try:

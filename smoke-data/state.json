@@ -1,0 +1,21 @@
+{
+ "configs": {
+  "1": {
+   "id": 1,
+   "name": "probe",
+   "uuid": "1c6f126e-ab25-4f0a-b4e4-b50862ca3b69",
+   "enabled": true,
+   "note": "",
+   "quota_bytes": 5368709120,
+   "speed_mbps": 0,
+   "max_ips": 0,
+   "expires_at": 1791231210.039968,
+   "used_bytes": 0,
+   "created_at": 1788639210.0399683
+  }
+ },
+ "groups": {},
+ "admin_hash": "$2b$12$DVEBNQp7AWwe9igO5UuI6.6nDi8Mcp5MsyMqCWI8Myn3DiI1APE/y",
+ "seq": 2,
+ "need_admin_print": false
+}

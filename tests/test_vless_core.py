@@ -1,4 +1,4 @@
-﻿# tests/test_vless_core.py â€” header parse/build roundtrips + all error branches.
+# tests/test_vless_core.py â€” header parse/build roundtrips + all error branches.
 # Author: OpenCode
 import pytest
 

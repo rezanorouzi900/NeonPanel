@@ -1,4 +1,4 @@
-﻿# app/routes.py
+# app/routes.py
 # Panel API + public sub pages (single VLESS protocol — px-panel method).
 # Author: OpenCode
 from __future__ import annotations
@@ -220,7 +220,7 @@ def stats(request: Request):
 
 @router.get("/api/health")
 def health():
-    return {"ok": True, "version": "3.0.0", "proto": "vless-ws"}
+    return {"ok": True, "version": __import__("app").__version__, "proto": "vless-ws"}
 
 
 # ---------------- public sub endpoints ----------------
