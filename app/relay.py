@@ -5,12 +5,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import struct
 import time
 
 import httpx
-from starlette.types import Scope
+from starlette.types import Receive, Scope, Send
 
 from . import store
 from .vless import RESP_OK, parse_header
@@ -54,19 +55,55 @@ def _client_ip(scope) -> str:
             or (scope.get("client") or ["?"])[0])
 
 
+def _subprotocol(scope) -> str:
+    """First offered client subprotocol (used for ed=2560 early data)."""
+    for k, v in scope.get("headers", []):
+        if k.decode().lower() == "sec-websocket-protocol":
+            return v.decode().split(",")[0].strip()
+    return ""
+
+
+def _uses_early_data(scope) -> bool:
+    return b"ed=" in (scope.get("query_string") or b"")
+
+
 async def handle_vless_ws(scope: Scope, receive, send) -> None:
     """One VLESS-over-WS connection: parse header, connect, pump both ways."""
     ip = _client_ip(scope)
-    await send({"type": "websocket.accept", "subprotocol": None})
+    sub = _subprotocol(scope)
+    await send({"type": "websocket.accept", "subprotocol": sub or None})
+
+    # ed=2560: client embedded the VLESS header (base64) in the subprotocol.
+    # It then sends NO frame until it sees the 101 — so decode BEFORE reading.
+    initial = b""
+    has_ed = bool(sub) and _uses_early_data(scope)
+    if has_ed:
+        try:
+            ed = base64.b64decode(sub)
+        except Exception:
+            ed = b""
+        if len(ed) >= 24:
+            initial = ed
     try:
-        first = await _first_frame(receive)
-        if not first:
+        if not initial:
+            first = await asyncio.wait_for(_first_frame(receive), timeout=15)
+            initial = first or b""
+        else:
+            # a frame may still carry the rest (header split across both)
+            try:
+                extra = await asyncio.wait_for(_first_frame(receive), timeout=0.05)
+                if extra:
+                    initial = initial + extra
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                pass
+
+        if not initial:
             await send({"type": "websocket.close", "code": 1000})
             return
 
         valid = {c["uuid"] for c in store.list_configs() if c.get("enabled")}
         try:
-            uid, addr, port, hlen = parse_header(first, valid)
+            uid, addr, port, hlen = parse_header(initial, valid)
         except ValueError as e:
             log.info("vless reject (%s) ip=%s", e, ip)
             await send({"type": "websocket.close", "code": 1000})
@@ -80,10 +117,10 @@ async def handle_vless_ws(scope: Scope, receive, send) -> None:
             await send({"type": "websocket.close", "code": 1000})
             return
 
-        payload = first[hlen:]
+        payload = initial[hlen:]
         used = 0
         try:
-            if port == UDP_DNS_PORT and first[18] == 0x02:  # UDP DNS request
+            if port == UDP_DNS_PORT and initial[18] == 0x02:  # UDP DNS request
                 used = await _dns_doh(send, payload)
             else:
                 used = await _tcp_pipe(send, receive, payload, addr, port, uid)
@@ -95,6 +132,12 @@ async def handle_vless_ws(scope: Scope, receive, send) -> None:
                 await send({"type": "websocket.close", "code": 1000})
             except Exception:
                 pass
+    except Exception:  # noqa: BLE001 — relay must never crash the server
+        log.exception("relay error")
+        try:
+            await send({"type": "websocket.close", "code": 1011})
+        except Exception:
+            pass
     except Exception:  # noqa: BLE001 — relay must never crash the server
         log.exception("relay error")
         try:

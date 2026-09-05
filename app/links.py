@@ -16,7 +16,7 @@ def ws_path(token: str = "") -> str:
 
 def build_vless(uuid: str, host: str, port: int, name: str, tls: bool,
                path: str | None = None, fp: str = FP) -> str:
-    """vless:// link exactly in the proven px-panel shape."""
+    """vless:// link — explicit port always (px-panel shape, ed=2560 early data)."""
     p = path or ws_path()
     q = "&".join([
         "encryption=none",
@@ -29,8 +29,8 @@ def build_vless(uuid: str, host: str, port: int, name: str, tls: bool,
         "alpn=http/1.1" if tls else "",
     ])
     q = "&".join(x for x in q.split("&") if x)
-    addr = host if (tls and port in (443, 8443, 2053, 2083, 2087, 2096)) else f"{host}:{port}"
-    return f"vless://{uuid}@{addr}?{q}#{quote(name)}"
+    # explicit :port — some clients mis-detect the server port otherwise
+    return f"vless://{uuid}@{host}:{port}?{q}#{quote(name)}"
 
 
 def build_singbox_outbound(uuid: str, host: str, port: int, tag: str, tls: bool,

@@ -1,11 +1,13 @@
 # tests/test_e2e_relay.py — real VLESS handshake through the pure-python relay.
 # Author: OpenCode
 import asyncio
+import base64
 
 import pytest
 
 from app import store
 from app.bridge import Bridge
+from app.links import build_vless
 from app.vless import RESP_OK, build_header
 
 
@@ -54,6 +56,63 @@ async def _echo_server():
             writer.close()
 
     return await asyncio.start_server(handler, "127.0.0.1", ECHO_PORT)
+
+
+class _FakePanel2:
+    async def __call__(self, scope, receive, send):
+        raise AssertionError("panel must not see /vl traffic")
+
+
+@pytest.mark.asyncio
+async def test_early_data_2560(tmp_path, monkeypatch):
+    """ed=2560: client sends the VLESS header in Sec-WebSocket-Protocol (base64)
+    and NO first frame — the relay must read the header from the subprotocol."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    store._state = {"configs": {}, "groups": {}, "admin_hash": "x", "seq": 1}
+    cfg, code = store.create_config("ed-user")
+    assert code == ""
+    store.save = lambda: None
+
+    hdr_ed = base64.b64encode(build_header(cfg["uuid"], "127.0.0.1", ECHO_PORT) + b"hello")
+    srv = await _echo_server()
+    bridge = Bridge(_FakePanel2())
+    sent = []
+
+    async def receive():
+        # no first frame at all → relay must survive on early data alone
+        await asyncio.sleep(30)
+        return {"type": "websocket.disconnect", "code": 1000}
+
+    async def send(msg):
+        sent.append(msg)
+
+    scope = {"type": "websocket", "path": "/vl", "query_string": b"ed=2560",
+             "headers": [(b"sec-websocket-protocol", hdr_ed)],
+             "client": ("9.9.9.9", 1)}
+    task = asyncio.create_task(bridge(scope, receive, send))
+    try:
+        for _ in range(40):
+            if any(s.get("bytes") == b"HELLO" for s in sent):
+                break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail("echo reply never arrived via early data")
+        # subprotocol echo is mandatory for strict clients (RFC 6455)
+        accept = next(s for s in sent if s["type"] == "websocket.accept")
+        assert accept.get("subprotocol") == hdr_ed.decode()
+    finally:
+        task.cancel()
+        srv.close()
+        await srv.wait_closed()
+
+
+def test_link_has_explicit_port_and_ed2560():
+    link = build_vless("11111111-2222-3333-4444-555555555555",
+                       "panel.example.com", 443, "reza", tls=True)
+    assert "@panel.example.com:443?" in link
+    assert "security=tls" in link
+    assert "path=/vl?ed=2560" in link
+    assert "alpn=http/1.1" in link
 
 
 @pytest.mark.asyncio
