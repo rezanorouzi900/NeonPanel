@@ -182,7 +182,7 @@ async function pSet(){
 }
 
 // ---------- router ----------
-const routes={'':'pDash',cfgs:'pCfgs',groups:'pGroups',set:'pSet'};
+const routes={'':pDash,cfgs:pCfgs,groups:pGroups,set:pSet};
 async function render(){
   const page=(location.hash.replace(/^#\/?/,'')||'').split('?')[0];
   try{
