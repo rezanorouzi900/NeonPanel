@@ -1,5 +1,5 @@
-# app/relay.py
-# The heart: ASGI app that speaks VLESS over WebSocket (px-panel method).
+﻿# app/relay.py
+# The heart: ASGI app that speaks VLESS over WebSocket (native in-process relay).
 # Client -> uvicorn(TLS edge) -> this WS handler -> parse VLESS -> TCP connect -> pipe.
 # Author: OpenCode
 from __future__ import annotations
@@ -19,7 +19,7 @@ from .vless import RESP_OK, parse_header
 log = logging.getLogger("relay")
 
 WS_PATH = "/vl"
-UDP_DNS_PORT = 53  # UDP only for DNS (DoH upstream) — like px-panel
+UDP_DNS_PORT = 53  # UDP only for DNS, answered via DoH upstream
 DNS_UPSTREAM = "https://cloudflare-dns.com/dns-query"
 CHUNK = 65536
 REFILL = 0.2  # token-bucket refill interval (s)
@@ -74,7 +74,7 @@ async def handle_vless_ws(scope: Scope, receive, send) -> None:
     await send({"type": "websocket.accept", "subprotocol": sub or None})
 
     # ed=2560: client embedded the VLESS header (base64) in the subprotocol.
-    # It then sends NO frame until it sees the 101 — so decode BEFORE reading.
+    # It then sends NO frame until it sees the 101 â€” so decode BEFORE reading.
     initial = b""
     has_ed = bool(sub) and _uses_early_data(scope)
     if has_ed:
@@ -132,13 +132,13 @@ async def handle_vless_ws(scope: Scope, receive, send) -> None:
                 await send({"type": "websocket.close", "code": 1000})
             except Exception:
                 pass
-    except Exception:  # noqa: BLE001 — relay must never crash the server
+    except Exception:  # noqa: BLE001 â€” relay must never crash the server
         log.exception("relay error")
         try:
             await send({"type": "websocket.close", "code": 1011})
         except Exception:
             pass
-    except Exception:  # noqa: BLE001 — relay must never crash the server
+    except Exception:  # noqa: BLE001 â€” relay must never crash the server
         log.exception("relay error")
         try:
             await send({"type": "websocket.close", "code": 1011})
@@ -222,7 +222,7 @@ async def _tcp_pipe(send, receive, first_payload: bytes, addr: str,
 
 
 async def _dns_doh(send, payload: bytes) -> int:
-    """UDP DNS(53) → DoH upstream; reply framed [len(2B)][dns] (px-panel style)."""
+    """UDP DNS(53) → DoH upstream; reply framed [len(2B)][dns]."""
     try:
         async with httpx.AsyncClient(timeout=6) as cx:
             r = await cx.post(DNS_UPSTREAM, content=payload,
@@ -233,3 +233,5 @@ async def _dns_doh(send, payload: bytes) -> int:
         return len(payload) + len(ans)
     except Exception:
         return len(payload)
+
+
