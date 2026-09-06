@@ -1,2 +1,2 @@
-# NeonPanel v3. Author: OpenCode
-__version__ = "3.0.0"
+﻿# NeonPanel application package. Author: OpenCode
+__version__ = "3.3.0"

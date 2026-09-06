@@ -137,13 +137,7 @@ async def handle_vless_ws(scope: Scope, receive, send) -> None:
                 await send({"type": "websocket.close", "code": 1000})
             except Exception:
                 pass
-    except Exception:  # noqa: BLE001 â€” relay must never crash the server
-        log.exception("relay error")
-        try:
-            await send({"type": "websocket.close", "code": 1011})
-        except Exception:
-            pass
-    except Exception:  # noqa: BLE001 â€” relay must never crash the server
+    except Exception:  # noqa: BLE001 — relay must never crash the server
         log.exception("relay error")
         try:
             await send({"type": "websocket.close", "code": 1011})
@@ -164,6 +158,114 @@ async def _first_frame(receive) -> bytes | None:
                 data = (msg.get("text") or "").encode()
             if data:
                 return data
+
+
+async def handle_tcp_stream(reader, writer) -> None:
+    """VLESS over plain TCP — for a raw port when exposed (works like WS but
+    without the WebSocket framing). Reads the header from the stream directly."""
+    ip = (writer.get_extra_info("peername") or ("?", 0))[0]
+    try:
+        head = await asyncio.wait_for(reader.read(4096), timeout=15)
+        if not head:
+            return
+        valid = {c["uuid"] for c in store.list_configs() if c.get("enabled")}
+        try:
+            uid, addr, port, hlen = parse_header(head, valid)
+        except ValueError as e:
+            log.info("tcp reject (%s) ip=%s", e, ip)
+            return
+        cfg = store.get_by_uuid(uid)
+        ok, reason = store.usable(cfg)
+        if not ok or not store.live_start(uid, ip):
+            log.info("tcp %s blocked: %s", uid[:8], reason)
+            store.live_end(uid, ip)
+            return
+        payload = head[hlen:]
+        used = 0
+        try:
+            if port == UDP_DNS_PORT and head[18] == 0x02:
+                used = await _dns_tcp(writer, payload)
+            else:
+                used = await _tcp_pipe_raw(writer, reader, payload, addr, port, uid)
+        finally:
+            if used:
+                store.add_usage(str(cfg["id"]), used)
+            store.live_end(uid, ip)
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+
+async def _dns_tcp(writer, payload: bytes) -> int:
+    """UDP-DNS(53) over raw TCP → DoH; framed [len(2B)][dns]."""
+    try:
+        async with httpx.AsyncClient(timeout=6) as cx:
+            r = await cx.post(DNS_UPSTREAM, content=payload,
+                              headers={"content-type": "application/dns-message"})
+        ans = r.content
+        writer.write(struct.pack(">H", len(ans)) + ans)
+        await writer.drain()
+        return len(payload) + len(ans)
+    except Exception:
+        return len(payload)
+
+
+async def _tcp_pipe_raw(writer, reader, first_payload: bytes, addr: str,
+                        port: int, uid: str) -> int:
+    """Connect to destination and pipe over raw TCP (no WS framing)."""
+    try:
+        dst_r, dst_w = await asyncio.wait_for(
+            asyncio.open_connection(addr, port), timeout=10)
+    except (OSError, asyncio.TimeoutError):
+        return 0
+    dst_w.write(first_payload)
+    writer.write(RESP_OK)
+    await writer.drain()
+    used = len(first_payload or b"")
+    cfg = store.get_by_uuid(uid) or {}
+    th = _Throttle(cfg.get("speed_mbps", 0))
+
+    async def c2d():
+        nonlocal used
+        try:
+            while True:
+                chunk = await reader.read(CHUNK)
+                if not chunk:
+                    return
+                used += len(chunk)
+                await th.wait(len(chunk))
+                dst_w.write(chunk)
+                await dst_w.drain()
+        except asyncio.CancelledError:
+            raise
+
+    async def d2c():
+        nonlocal used
+        while True:
+            chunk = await dst_r.read(CHUNK)
+            if not chunk:
+                return
+            used += len(chunk)
+            writer.write(chunk)
+            await writer.drain()
+
+    t1 = asyncio.create_task(c2d())
+    t2 = asyncio.create_task(d2c())
+    try:
+        await asyncio.wait([t1, t2], return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in (t1, t2):
+            if not t.done():
+                t.cancel()
+        try:
+            dst_w.close()
+        except Exception:
+            pass
+    return used
 
 
 async def _tcp_pipe(send, receive, first_payload: bytes, addr: str,

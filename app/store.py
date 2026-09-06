@@ -67,6 +67,15 @@ def ensure_admin() -> str | None:
     return generated
 
 
+def ensure_default_link() -> dict | None:
+    """If no config exists, create one named 'default' so the panel always
+    has a live link (survives redeploys when DATA_DIR is a volume)."""
+    if _state["configs"]:
+        return None
+    cfg, code = create_config("default", 0, 0, 0, 0)
+    return cfg if code == "" else None
+
+
 def check_admin(password: str) -> bool:
     h = _state.get("admin_hash", "")
     try:

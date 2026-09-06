@@ -1,8 +1,9 @@
 # app/main.py
-# NeonPanel v3 — pure-python VLESS relay panel (px-panel method, faster).
+# NeonPanel — pure-python VLESS panel (WS + optional raw TCP relay).
 # Author: OpenCode
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import os
@@ -16,6 +17,7 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "info").upper())
 log = logging.getLogger("main")
 
 _STATIC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
+_TCP_PORT = int(os.getenv("TCP_PORT", "0") or 0)
 
 
 @contextlib.asynccontextmanager
@@ -24,7 +26,22 @@ async def lifespan(app: FastAPI):
     generated = store.ensure_admin()
     if generated:
         log.warning(">>> رمز ادمین (فقط یک‌بار): %s <<<", generated)
+    default = store.ensure_default_link()
+    if default:
+        log.warning(">>> لینک پیش‌فرض ساخته شد: config id=%s uuid=%s <<<",
+                    default["id"], default["uuid"])
+    tcp_task = None
+    if _TCP_PORT:
+        from . import relay
+
+        tcp_task = asyncio.create_task(
+            asyncio.start_server(relay.handle_tcp_stream, "0.0.0.0", _TCP_PORT))
+        log.info("raw TCP VLESS listener on 0.0.0.0:%s", _TCP_PORT)
     yield
+    if tcp_task:
+        tcp_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await tcp_task
 
 
 def create_app() -> FastAPI:
