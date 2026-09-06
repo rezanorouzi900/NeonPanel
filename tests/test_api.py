@@ -39,7 +39,7 @@ def test_config_crud_flow(auth_client):
     assert r.status_code == 200, r.text
     d = r.json()["data"]
     assert d["uuid"] and d["link"].startswith("vless://")
-    assert "type=ws" in d["link"] and "ed=2560" in d["link"]
+    assert "type=ws" in d["link"]
     assert d["qr"].startswith("data:image/png;base64,")
 
     # duplicate
@@ -98,8 +98,8 @@ def test_sub_singbox(auth_client):
     doc = s.json()
     ob = doc["outbounds"][0]
     assert ob["type"] == "vless"
-    assert ob["transport"]["early_data_header_name"] == "Sec-WebSocket-Protocol"
-    assert ob["transport"]["max_early_data"] == 2560
+    assert ob["transport"]["type"] == "ws"
+    assert "max_early_data" not in ob["transport"]
 
 
 def test_sub_clash(auth_client):

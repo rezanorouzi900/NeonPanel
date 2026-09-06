@@ -1,12 +1,12 @@
 # app/links.py
-# VLESS link builder — px-panel format (single protocol, ed=2560, clean params).
+# VLESS link builder — clean params, NO early-data (ed) so it works through
+# any edge proxy (Railway/Cloudflare) that may strip custom WS headers.
 # Author: OpenCode
 from __future__ import annotations
 
 from urllib.parse import quote
 
 FP = "chrome"
-ED = 2560  # 0-RTT early-data via Sec-WebSocket-Protocol (px-panel standard)
 
 
 def ws_path(token: str = "") -> str:
@@ -15,8 +15,8 @@ def ws_path(token: str = "") -> str:
 
 
 def build_vless(uuid: str, host: str, port: int, name: str, tls: bool,
-               path: str | None = None, fp: str = FP) -> str:
-    """vless:// link — explicit port always (px-panel shape, ed=2560 early data)."""
+                path: str | None = None, fp: str = FP) -> str:
+    """vless:// link — VLESS header sent in the first WS frame (max compatible)."""
     p = path or ws_path()
     q = "&".join([
         "encryption=none",
@@ -25,7 +25,7 @@ def build_vless(uuid: str, host: str, port: int, name: str, tls: bool,
         f"fp={fp}",
         "type=ws",
         f"host={host}",
-        f"path={quote(p)}?ed={ED}",
+        f"path={quote(p)}",
         "alpn=http/1.1" if tls else "",
     ])
     q = "&".join(x for x in q.split("&") if x)
@@ -40,8 +40,7 @@ def build_singbox_outbound(uuid: str, host: str, port: int, tag: str, tls: bool,
         "tag": tag, "type": "vless", "server": host, "server_port": port,
         "uuid": uuid, "network": "tcp",
         "transport": {
-            "type": "ws", "path": p, "max_early_data": ED,
-            "early_data_header_name": "Sec-WebSocket-Protocol",
+            "type": "ws", "path": p,
             "headers": {"Host": host},
         },
     }
@@ -60,8 +59,7 @@ def build_clash_proxy(uuid: str, host: str, port: int, name: str, tls: bool,
         "name": name, "type": "vless", "server": host, "port": port,
         "uuid": uuid, "network": "ws",
         "ws-opts": {
-            "path": p, "max-early-data": ED,
-            "early-data-header-name": "Sec-WebSocket-Protocol",
+            "path": p,
             "headers": {"Host": host},
         },
     }
@@ -84,7 +82,7 @@ def build_xray_outbound(uuid: str, host: str, port: int, tag: str, tls: bool,
         }]},
         "streamSettings": {
             "network": "ws",
-            "wsSettings": {"path": f"{p}?ed={ED}", "headers": {"Host": host}},
+            "wsSettings": {"path": p, "headers": {"Host": host}},
         },
     }
     if tls:
